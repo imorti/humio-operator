@@ -16,6 +16,22 @@ import (
 func constructPod(hc *corev1alpha1.HumioCluster) (*corev1.Pod, error) {
 	var pod corev1.Pod
 	mode := int32(420)
+	authCommand := `
+while true; do
+	USER_ID=$(curl -s http://localhost:8080/graphql -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $(cat /data/humio-data/local-admin-token.txt)" -d '{ "query": "mutation { addUser(input: { username: \"admin\" }) { user { id } } }" }' | jq -r '.data.addUser.user.id')
+	if [ "${USER_ID}" == "" ]; then 
+		echo "waiting on humio"
+		sleep 5
+		continue
+	fi
+	TOKEN=$(jq -r ".users.${USER_ID}.entity.apiToken" /data/humio-data/global-data-snapshot.json)
+	CURRENT_TOKEN=$(kubectl get secret $ADMIN_SECRET_NAME -n default -o json | jq -r '.data.token' | base64 -d)
+	if [ "${CURRENT_TOKEN}" != "${TOKEN}" ]; then
+	  kubectl delete secret $ADMIN_SECRET_NAME --namespace $NAMESPACE || true
+	  kubectl create secret generic $ADMIN_SECRET_NAME --namespace $NAMESPACE --from-literal=token=$TOKEN
+	  sleep 30
+	fi
+done`
 	pod = corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-core-%s", hc.Name, generatePodSuffix()),
@@ -114,6 +130,40 @@ func constructPod(hc *corev1alpha1.HumioCluster) (*corev1.Pod, error) {
 					Resources:       podResourcesOrDefault(hc),
 					SecurityContext: containerSecurityContextOrDefault(hc),
 				},
+				{
+					Name:    "auth",
+					Image:   "humio/strix", // TODO: build our own and don't use latest
+					Command: []string{"/bin/sh", "-c"},
+					Args:    []string{authCommand},
+					Env: []corev1.EnvVar{
+						corev1.EnvVar{
+							Name: "NAMESPACE",
+							ValueFrom: &corev1.EnvVarSource{
+								FieldRef: &corev1.ObjectFieldSelector{
+									FieldPath: "metadata.namespace",
+								},
+							},
+						},
+						corev1.EnvVar{
+							Name:  "ADMIN_SECRET_NAME",
+							Value: "admin-token", // TODO: get this from code
+						},
+					},
+					ImagePullPolicy: "IfNotPresent",
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "humio-data",
+							MountPath: "/data",
+							ReadOnly:  true,
+						},
+						corev1.VolumeMount{
+							Name:      "auth-service-account-secret",
+							MountPath: "/var/run/secrets/kubernetes.io/serviceaccount",
+							ReadOnly:  true,
+						},
+					},
+					SecurityContext: containerSecurityContextOrDefault(hc),
+				},
 			},
 			Volumes: []corev1.Volume{
 				{
@@ -129,6 +179,15 @@ func constructPod(hc *corev1alpha1.HumioCluster) (*corev1.Pod, error) {
 					VolumeSource: corev1.VolumeSource{
 						Secret: &corev1.SecretVolumeSource{
 							SecretName:  initServiceAccountSecretName,
+							DefaultMode: &mode,
+						},
+					},
+				},
+				{
+					Name: "auth-service-account-secret",
+					VolumeSource: corev1.VolumeSource{
+						Secret: &corev1.SecretVolumeSource{
+							SecretName:  authServiceAccountSecretName,
 							DefaultMode: &mode,
 						},
 					},

@@ -119,6 +119,24 @@ func TestReconcileHumioCluster_Reconcile(t *testing.T) {
 				t.Errorf("failed to get init cluster role binding: %s", err)
 			}
 
+			// Check that the auth service account, secret, role and role binding are created
+			secret, err = kubernetes.GetSecret(r.client, context.TODO(), authServiceAccountSecretName, updatedHumioCluster.Namespace)
+			if err != nil {
+				t.Errorf("get auth service account secret: (%v). %+v", err, secret)
+			}
+			_, err = kubernetes.GetServiceAccount(r.client, context.TODO(), authServiceAccountNameOrDefault(updatedHumioCluster), updatedHumioCluster.Namespace)
+			if err != nil {
+				t.Errorf("failed to get auth service account: %s", err)
+			}
+			_, err = kubernetes.GetRole(r.client, context.TODO(), authRoleName(updatedHumioCluster), updatedHumioCluster.Namespace)
+			if err != nil {
+				t.Errorf("failed to get auth cluster role: %s", err)
+			}
+			_, err = kubernetes.GetRoleBinding(r.client, context.TODO(), authRoleBindingName(updatedHumioCluster), updatedHumioCluster.Namespace)
+			if err != nil {
+				t.Errorf("failed to get auth cluster role binding: %s", err)
+			}
+
 			// Check that the developer password exists as a k8s secret
 			secret, err = kubernetes.GetSecret(r.client, context.TODO(), kubernetes.ServiceAccountSecretName, updatedHumioCluster.Namespace)
 			if err != nil {

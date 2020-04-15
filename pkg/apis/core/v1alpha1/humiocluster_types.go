@@ -40,6 +40,8 @@ type HumioClusterSpec struct {
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
 	// InitServiceAccountName is the name of the Kubernetes Service Account that will be attached to the init container in the humio pod
 	InitServiceAccountName string `json:"initServiceAccountName,omitempty"`
+	// AuthServiceAccountName is the name of the Kubernetes Service Account that will be attached to the auth container in the humio pod
+	AuthServiceAccountName string `json:"authServiceAccountName,omitempty"`
 	// Resources is the kubernetes resource limits for the humio pod
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 	// ExtraKafkaConfigs is a multi-line string containing kafka properties

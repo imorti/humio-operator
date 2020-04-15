@@ -617,6 +617,10 @@ spec:
                       type: array
                   type: object
               type: object
+            authServiceAccountName:
+              description: AuthServiceAccountName is the name of the Kubernetes Service
+                Account that will be attached to the auth container in the humio pod
+              type: string
             containerSecurityContext:
               description: ContainerSecurityContext is the security context applied
                 to the Humio container
