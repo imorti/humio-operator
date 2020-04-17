@@ -11,3 +11,6 @@ cover: test
 
 test: fmt vet
 	go test -v ./... -covermode=count -coverprofile cover.out
+
+build:
+	

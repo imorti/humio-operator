@@ -6,7 +6,6 @@ import (
 	"strconv"
 
 	humioClusterv1alpha1 "github.com/humio/humio-operator/pkg/apis/core/v1alpha1"
-	"github.com/humio/humio-operator/pkg/kubernetes"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -202,17 +201,6 @@ func setEnvironmentVariableDefaults(humioCluster *humioClusterv1alpha1.HumioClus
 		{
 			Name:  "PUBLIC_URL", // URL used by users/browsers.
 			Value: "http://$(THIS_POD_IP):$(HUMIO_PORT)",
-		},
-		{
-			Name: "SINGLE_USER_PASSWORD",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					Key: "password",
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: kubernetes.ServiceAccountSecretName,
-					},
-				},
-			},
 		},
 		{
 			Name:  "ZOOKEEPER_URL_FOR_NODE_UUID",

@@ -134,12 +134,6 @@ func (r *ReconcileHumioCluster) Reconcile(request reconcile.Request) (reconcile.
 		return reconcile.Result{}, err
 	}
 
-	// Ensure developer password is a k8s secret
-	err = r.ensureDeveloperUserPasswordExists(context.TODO(), humioCluster)
-	if err != nil {
-		return reconcile.Result{}, err
-	}
-
 	// Ensure extra kafka configs configmap if specified
 	err = r.ensureKafkaConfigConfigmap(context.TODO(), humioCluster)
 	if err != nil {
@@ -162,6 +156,13 @@ func (r *ReconcileHumioCluster) Reconcile(request reconcile.Request) (reconcile.
 		}
 	}
 
+	r.logger.Infof("client: %+v", r.humioClient)
+	// Wait for the sidecar to create the secret which contains the token used to authenticate with humio and then authenticate with it
+	result, err = r.authWithSidecarToken(context.TODO(), humioCluster, r.humioClient.GetBaseURL(humioCluster))
+	if result != emptyResult || err != nil {
+		return result, err
+	}
+
 	r.setClusterState(context.TODO(), corev1alpha1.HumioClusterStateRunning, humioCluster)
 
 	defer func(context context.Context, humioCluster *corev1alpha1.HumioCluster) {
@@ -169,7 +170,6 @@ func (r *ReconcileHumioCluster) Reconcile(request reconcile.Request) (reconcile.
 		r.setClusterNodeCount(context, len(pods), humioCluster)
 	}(context.TODO(), humioCluster)
 
-	// TODO: get cluster version from humio api
 	defer func(context context.Context, humioClient humio.Client, humioCluster *corev1alpha1.HumioCluster) {
 		status, err := humioClient.Status()
 		if err != nil {
@@ -185,12 +185,6 @@ func (r *ReconcileHumioCluster) Reconcile(request reconcile.Request) (reconcile.
 
 	// Ensure service exists
 	err = r.ensureServiceExists(context.TODO(), humioCluster)
-	if err != nil {
-		return reconcile.Result{}, err
-	}
-
-	// Ensure persistent token is a k8s secret, authenticate the humio client with the persistent token
-	err = r.ensurePersistentTokenExists(context.TODO(), humioCluster, r.humioClient.GetBaseURL(humioCluster))
 	if err != nil {
 		return reconcile.Result{}, err
 	}
@@ -737,83 +731,23 @@ func (r *ReconcileHumioCluster) ensurePodsExist(conetext context.Context, humioC
 	return reconcile.Result{}, nil
 }
 
-// TODO: extend this (or create separate method) to take this password and perform a login, get the jwt token and then call the api to get the persistent api token and also store that as a secret
-// this functionality should perhaps go into humio.cluster_auth.go
-func (r *ReconcileHumioCluster) ensureDeveloperUserPasswordExists(conetext context.Context, humioCluster *corev1alpha1.HumioCluster) error {
-	secretData := map[string][]byte{"password": []byte(generatePassword())}
-	_, err := kubernetes.GetSecret(r.client, conetext, kubernetes.ServiceAccountSecretName, humioCluster.Namespace)
-	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			secret := kubernetes.ConstructSecret(humioCluster.Name, humioCluster.Namespace, kubernetes.ServiceAccountSecretName, secretData)
-			if err := controllerutil.SetControllerReference(humioCluster, secret, r.scheme); err != nil {
-				r.logger.Errorf("could not set controller reference: %s", err)
-				return err
-			}
-			err = r.client.Create(context.TODO(), secret)
-			if err != nil {
-				r.logger.Errorf("unable to create service account secret for HumioCluster: %s", err)
-				return err
-			}
-			r.logger.Infof("successfully created service account secret %s for HumioCluster %s", kubernetes.ServiceAccountSecretName, humioCluster.Name)
-			prometheusMetrics.Counters.SecretsCreated.Inc()
-		}
-	}
-	return nil
-}
-
-func (r *ReconcileHumioCluster) ensurePersistentTokenExists(conetext context.Context, humioCluster *corev1alpha1.HumioCluster, url string) error {
+func (r *ReconcileHumioCluster) authWithSidecarToken(conetext context.Context, humioCluster *corev1alpha1.HumioCluster, url string) (reconcile.Result, error) {
 	existingSecret, err := kubernetes.GetSecret(r.client, conetext, kubernetes.ServiceTokenSecretName, humioCluster.Namespace)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
-			password, err := r.getDeveloperUserPassword(humioCluster)
-			if err != nil {
-				r.logger.Errorf("failed to get password: %s", err)
-				return err
-			}
-			persistentToken, err := GetPersistentToken(humioCluster, url, password, r.humioClient)
-			if err != nil {
-				r.logger.Errorf("failed to get persistent token: %s", err)
-				return err
-			}
-
-			secretData := map[string][]byte{"token": []byte(persistentToken)}
-			secret := kubernetes.ConstructSecret(humioCluster.Name, humioCluster.Namespace, kubernetes.ServiceTokenSecretName, secretData)
-			if err := controllerutil.SetControllerReference(humioCluster, secret, r.scheme); err != nil {
-				r.logger.Errorf("could not set controller reference: %s", err)
-				return err
-			}
-			err = r.client.Create(context.TODO(), secret)
-			if err != nil {
-				r.logger.Errorf("unable to create persistent token secret for HumioCluster: %s", err)
-				return err
-			}
-			r.logger.Infof("successfully created persistent token secret %s for HumioCluster %s", kubernetes.ServiceTokenSecretName, humioCluster.Name)
-			prometheusMetrics.Counters.SecretsCreated.Inc()
+			r.logger.Infof("waiting for sidecar to populate secret %s for HumioCluster %s", kubernetes.ServiceTokenSecretName, humioCluster.Name)
+			return reconcile.Result{Requeue: true, RequeueAfter: time.Second * 10}, nil
 		}
-	} else {
-		r.logger.Infof("persistent token secret %s already exists for HumioCluster %s", kubernetes.ServiceTokenSecretName, humioCluster.Name)
 	}
 
+	r.logger.Infof("client: %+v", r.humioClient)
 	// Either authenticate or re-authenticate with the persistent token
-	return r.humioClient.Authenticate(
+	return reconcile.Result{}, r.humioClient.Authenticate(
 		&humioapi.Config{
 			Address: url,
 			Token:   string(existingSecret.Data["token"]),
 		},
 	)
-}
-
-func (r *ReconcileHumioCluster) getDeveloperUserPassword(hc *corev1alpha1.HumioCluster) (string, error) {
-	secret, err := kubernetes.GetSecret(r.client, context.TODO(), kubernetes.ServiceAccountSecretName, hc.Namespace)
-	if err != nil {
-		r.logger.Errorf("could not get secret with password: %s", err)
-		return "", err
-	}
-	if string(secret.Data["password"]) == "" {
-		r.logger.Errorf("secret %s expected content to not be empty, but it was", kubernetes.ServiceAccountSecretName)
-		return "", err
-	}
-	return string(secret.Data["password"]), nil
 }
 
 // TODO: there is no need for this. We should instead change this to a get method where we return the list of env vars
